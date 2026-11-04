@@ -1,0 +1,41 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Build outputs
+dist/
+build/
+.svelte-kit/
+.output/
+
+# Env & secrets — JANGAN PERNAH di-commit
+.env
+.env.*
+!.env.example
+
+# Prisma
+prisma/migrations/dev/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Bun
+bun.lockb
+
+# oh-my-claudecode runtime state (artefak lokal tooling, bukan kode)
+.omc/
+
+# Graphify artifacts
+graphify-out/
+.playwright-cli/
+
+# Firebase Android config (tracked di repo privat sejak #169; cegah commit baru)
+google-services.json

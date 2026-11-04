@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="id">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<meta name="text-scale" content="scale" />
+		<!-- Static head fallback: dashboard ini CSR (ssr=false), jadi title/meta
+		     harus ada di shell HTML agar terbaca bot tanpa JavaScript.
+		     Setelah JS jalan, <svelte:head> di +layout.svelte mengambil alih. -->
+		<title>GoBareng</title>
+		<meta name="description" content="Dashboard safety GoBareng khusus admin: pantau trip, lokasi live anggota, dan SOS dari posko. Go bareng, pulang bareng dengan selamat." />
+		<meta name="robots" content="noindex, nofollow, noarchive, nosnippet" />
+		%sveltekit.head%
+	</head>
+	<body data-sveltekit-preload-data="hover">
+		<div style="display: contents">%sveltekit.body%</div>
+	</body>
+</html>

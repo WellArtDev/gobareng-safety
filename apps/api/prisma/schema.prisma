@@ -1,0 +1,975 @@
+// Prisma base models for GoBareng Safety (F2).
+// Shape mirrors src/store.ts (the in-memory store used by the F2 skeleton).
+// Wiring Prisma Client into routes is a later card; until then the schema
+// is the single source of truth for the data model.
+// Beacon models are deliberately ABSENT: Beacon LoRa/Meshtastic is ON HOLD
+// by Wella's order (26 Oct 2026) — do not build, do not announce.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// Prisma 7: the connection URL lives in prisma.config.ts (Migrate)
+// and in the PrismaClient pg adapter (runtime) — both read DATABASE_URL
+// from env, never from a committed file.
+datasource db {
+  provider = "postgresql"
+}
+
+enum TripType {
+  HIKING
+  TOURING
+}
+
+enum TripRole {
+  LEADER
+  SWEEPER
+  MEDIC
+  MEMBER
+}
+
+enum TripStatus {
+  PLANNED
+  ACTIVE
+  CLOSED
+}
+
+enum Attendance {
+  NOT_DEPARTED
+  DEPARTED
+}
+
+enum SosReason {
+  TERSESAT
+  CEDERA
+  MEDIS
+  LAINNYA
+  MOTOR_RUSAK
+  BENSIN_HABIS
+  BAN_BOCOR
+  KECELAKAAN
+}
+
+// SOS Umum (tanpa trip, untuk sehari-hari): 9 template alasan yang
+// dikunci Wella 2 Nov 2026 — tanpa anak hilang, tanpa alasan trip.
+enum GeneralSosReason {
+  KECELAKAAN_LALU_LINTAS
+  KENDARAAN_MOGOK
+  BAN_BOCOR_BENSIN_HABIS
+  KEJAHATAN
+  SAKIT_MENDADAK
+  BUTUH_AMBULANS
+  KEBAKARAN
+  BANJIR_POHON_TUMBANG
+  BUTUH_BANTUAN_SEGERA
+}
+
+enum SosLevel {
+  EMERGENCY
+  URGENT
+  HELP
+}
+
+enum SosStatus {
+  ACTIVE
+  ACKNOWLEDGED
+  IN_PROGRESS
+  RESOLVED
+  CANCELLED
+  FALSE_ALARM
+}
+
+enum ShareScope {
+  EMERGENCY_CONTACT
+  ANYONE
+}
+
+// Dashboard role (RBAC §14b): admin | command_center | user.
+enum StaffRole {
+  admin
+  command_center
+  user
+}
+
+// In-app notification kinds (contract §9).
+enum NotificationKind {
+  SOS_TRIGGERED
+  CHECKPOINT_CHECKIN
+  VERIFICATION_REQUEST
+  GENERAL_SOS_ALERT
+  GENERAL_SOS_CLOSED
+  TRIP_STARTED
+}
+
+enum OrganizerVerificationStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum Gender {
+  MALE
+  FEMALE
+}
+
+model User {
+  id                      String    @id @default(uuid())
+  email                   String    @unique
+  name                    String
+  slug                    String    @unique
+  passwordHash            String?
+  phone                   String?
+  // Kode negara ISO alpha-2 (mis. "ID"), nullable. Tampil di tabel
+  // Member sebagai ikon bendera saja (go international).
+  country                 String?
+  // Alamat bebas pengguna (diisi dari menu "Isi Data Profil" di app).
+  // Privat: tidak pernah tampil di profil publik (endpoint profil
+  // publik memakai allowlist eksplisit, bukan publicUser).
+  address                 String?
+  // Rekening organizer untuk trip berbayar (PR rekening-organizer):
+  // satu paket (nama bank, nomor, atas nama), dipakai ulang lintas
+  // trip. Sengaja TIDAK masuk mapUser/publicUser — hanya dibaca lewat
+  // bankDetailsOf (member trip berbayar yang sudah gabung) dan
+  // GET /auth/me/bank-details (pemilik sendiri).
+  bankName                String?
+  bankAccountNumber       String?
+  bankAccountHolder       String?
+  isAdmin                 Boolean   @default(false)
+  role                    StaffRole @default(user)
+  isVerified              Boolean   @default(false)
+  verificationRejectedAt  DateTime?
+  // Verifikasi akun dua kanal (PR verif-akun-dua-kanal, 3 Nov 2026):
+  // TERPISAH dari isVerified/OrganizerVerification (verifikasi organizer
+  // manual admin, jalurnya PRO). emailVerifiedAt = alamat email terbukti
+  // (OTP login via email, atau klik link verifikasi); phoneVerifiedAt =
+  // nomor HP terbukti (OTP login via HP, atau kode verifikasi WA);
+  // accountVerifiedAt = keduanya terbukti (diisi otomatis, bukan input).
+  emailVerifiedAt         DateTime?
+  phoneVerifiedAt         DateTime?
+  accountVerifiedAt       DateTime?
+  // SET-7: opsional, dipakai kriteria high-risk 'mayoritas perempuan'.
+  // Tidak pernah tampil di profil publik.
+  gender                  Gender?
+  suspendedAt             DateTime?
+  // Foto profil admin/member (Wella 1 Nov 2026): URL publik di
+  // /uploads/avatars/*, null = belum diunggah (fallback inisial).
+  avatarUrl               String?
+
+  memberships   TripMember[]
+  locations     Location[]
+  sosAlerts     SosAlert[]   @relation("SosSender")
+  generalSosSent       GeneralSos[]         @relation("GeneralSosSender")
+  generalSosResponses  GeneralSosResponder[]
+  generalSosReports    GeneralSosReport[]   @relation("GeneralSosReporter")
+  shareLinks    ShareLink[]
+  tripInvites   TripInvite[]
+  checkIns      CheckpointCheckIn[]
+  notifications Notification[]
+  reports           Report[]
+  emergencyContacts EmergencyContact[]
+  upgradeRequests   UpgradeRequest[]
+  tripPayments      TripPayment[]
+  refreshTokens     RefreshToken[]
+
+  organizerVerifications         OrganizerVerification[] @relation("OrganizerVerificationApplicant")
+  reviewedOrganizerVerifications OrganizerVerification[] @relation("OrganizerVerificationReviewer")
+
+  emailVerificationTokens EmailVerificationToken[]
+
+  magicLinkTokens MagicLinkToken[]
+
+  communityMemberships CommunityMember[]
+  mountainProposals   MountainProposal[]
+  routeProposals      RouteProposal[]
+  glimmerMessages     AiGlimmerMessage[] @relation("GlimmerSender")
+  tripQuestions       TripQuestion[]
+  pushTokens          PushToken[]
+}
+
+// Community moderation report (contract §14, file-10 Moderasi page).
+enum ReportStatus {
+  OPEN
+  ACTIONED
+  DISMISSED
+}
+
+model Report {
+  id         String       @id @default(uuid())
+  reporterId String
+  // What is being reported (free-form target description + reason are
+  // user data, not UI text; the dashboard renders them as-is).
+  targetType String
+  targetId   String?
+  reason     String
+  status     ReportStatus @default(OPEN)
+  createdAt  DateTime     @default(now())
+  closedAt   DateTime?
+
+  reporter User @relation(fields: [reporterId], references: [id], onDelete: Cascade)
+
+  @@index([status, createdAt])
+}
+
+model Notification {
+  id        String           @id @default(uuid())
+  userId    String
+  kind      NotificationKind
+  tripId    String?
+  refId     String?
+  actorName String?
+  createdAt DateTime         @default(now())
+  readAt    DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+}
+
+// A-4: emergency contacts per user — WA SOS recipients alongside the
+// leader's phone and 2 km bystanders. Never shown on public profiles.
+model EmergencyContact {
+  id        String   @id @default(uuid())
+  userId    String
+  name      String
+  phone     String
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+// A-4: log pengiriman WA SOS — tiap percobaan kirim dicatat (sukses /
+// gagal + alasan) untuk dipantau dari dashboard backend.
+model WaDispatchLog {
+  id        String   @id @default(uuid())
+  sosId     String
+  // null untuk SOS umum (tidak ada trip).
+  tripId    String?
+  toPhone   String
+  recipient WaRecipientKind
+  status    WaSendStatus
+  error     String?
+  createdAt DateTime @default(now())
+
+  @@index([sosId])
+  @@index([status, createdAt])
+}
+
+enum WaRecipientKind {
+  EMERGENCY_CONTACT
+  LEADER
+  BYSTANDER
+}
+
+enum WaSendStatus {
+  SENT
+  FAILED
+  SKIPPED_UNCONFIGURED
+}
+
+// PAY: upgrade GoBareng Pro — bayar QRIS sekali, verifikasi manual
+// admin (mockup upgrade: "aktif setelah pembayaran terverifikasi admin").
+// A-2: refresh token opaque — access JWT pendek (15 mnt), refresh
+// 30 hari dengan ROTASI: tiap pakai, token lama di-revoke dan diganti
+// baru. replacedBy melacak rantai; reuse token lama = indikasi curian.
+model RefreshToken {
+  id         String    @id @default(uuid())
+  userId     String
+  tokenHash  String    @unique
+  expiresAt  DateTime
+  revokedAt  DateTime?
+  replacedBy String?
+  createdAt  DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+// OTP passwordless (Wella 1 Nov 2026): kode 6 digit disimpan HASHED
+// (sha256, bukan plaintext), kedaluwarsa 5 menit, sekali pakai.
+// Disimpan di DB (bukan in-memory) supaya restart API tidak menghapus
+// kode yang masih berlaku. Satu baris = satu pengiriman; percobaan
+// salah dihitung pada baris terbaru yang belum kedaluwarsa, kunci 15
+// menit ditulis di lockedUntil baris itu dan berlaku per identifier
+// (semua kanal) supaya kunci tidak bisa di-bypass lewat kanal lain.
+model OtpCode {
+  id         String    @id @default(uuid())
+  identifier String
+  channel    String
+  codeHash   String
+  attempts   Int       @default(0)
+  lockedUntil DateTime?
+  consumedAt DateTime?
+  expiresAt  DateTime
+  createdAt  DateTime  @default(now())
+
+  @@index([identifier, createdAt])
+}
+
+// Link verifikasi email sekali pakai (verifikasi akun dua kanal).
+// Hanya HASH token yang disimpan — token mentah tidak pernah ditulis ke
+// DB/log. Satu user boleh punya beberapa link, tapi permintaan link baru
+// menghanguskan link lama yang belum dipakai (lihat service).
+model EmailVerificationToken {
+  id         String    @id @default(uuid())
+  userId     String
+  email      String
+  tokenHash  String
+  expiresAt  DateTime
+  consumedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([tokenHash])
+  @@index([userId, createdAt])
+}
+
+// Magic link juri tanpa OTP (3 Nov 2026, tenggat pengumuman 10 Nov 2026
+// 23:59 WIB). Mirip EmailVerificationToken tapi dapat dipakai BERULANG
+// sampai expiresAt (juri pakai HP + desktop), bukan sekali pakai.
+// Hanya HASH token yang disimpan — nilai asli tidak pernah ditulis ke
+// DB/log/repo. Sesi yang diterbitkan dari tautan ini ikut mati di
+// tenggat (lihat magic-link.ts: access JWT + refresh dibatasi tenggat).
+model MagicLinkToken {
+  id        String   @id @default(uuid())
+  userId    String
+  label     String
+  tokenHash String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([tokenHash])
+  @@index([userId, createdAt])
+}
+
+// A-5 §13: rating organizer pasca-trip — satu rating per (trip, penilai).
+// organizerId didenormalisasi dari leader trip saat rating dibuat supaya
+// agregat per-organizer murah (tanpa join trip).
+model Rating {
+  id          String   @id @default(uuid())
+  tripId      String
+  raterId     String
+  organizerId String
+  score       Int
+  comment     String?
+  createdAt   DateTime @default(now())
+
+  @@unique([tripId, raterId])
+  @@index([organizerId])
+}
+
+// SET-4/5/6: toggle platform dari dashboard (satu baris per kunci,
+// nilai boolean). Default hidup di kode (db.ts PLATFORM_SETTING_DEFAULTS),
+// baris hanya ditulis saat admin mengubah — DB kosong = semua default.
+model PlatformSetting {
+  key       String   @id
+  value     Boolean
+  // Setting teks dashboard (mis. nomor/template WhatsApp Brevo):
+  // value Boolean lama dipertahankan agar migrasi tidak merusak
+  // baris toggle; teks disimpan di sini, kosong = pakai env VPS.
+  valueText String?
+  updatedAt DateTime @updatedAt
+}
+
+// M2 push (FCM saja, Wella 3 Nov 2026): token device native per user.
+// Satu token per user; daftar ulang menimpa (perangkat ganti akun =
+// token pindah user).
+model PushToken {
+  id        String   @id @default(uuid())
+  userId    String   @unique
+  token     String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model UpgradeRequest {
+  id         String        @id @default(uuid())
+  userId     String
+  amount     Int
+  status     UpgradeStatus @default(PENDING)
+  createdAt  DateTime      @default(now())
+  verifiedAt DateTime?
+  verifiedBy String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([status, createdAt])
+}
+
+enum UpgradeStatus {
+  PENDING
+  VERIFIED
+  REJECTED
+}
+
+// PAY: pembayaran trip berbayar — transfer manual ke organizer,
+// organizer konfirmasi (S&K §4: platform bukan pihak transaksi).
+model TripPayment {
+  id          String           @id @default(uuid())
+  tripId      String
+  userId      String
+  amount      Int
+  status      TripPaymentStatus @default(WAITING)
+  proofNote   String?
+  createdAt   DateTime         @default(now())
+  confirmedAt DateTime?
+
+  trip Trip @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([tripId, userId])
+  @@index([status])
+}
+
+enum TripPaymentStatus {
+  WAITING
+  CONFIRMED
+  REJECTED
+}
+
+model Trip {
+  id           String     @id @default(uuid())
+  name         String
+  type         TripType
+  date         String
+  meetingPoint String
+  // Meeting-point coordinates (ERD meetingLat/meetingLng): anchor for
+  // the dashboard's numbered trip pins before any member position exists.
+  meetingLat   Float?
+  meetingLon   Float?
+  // Touring: tujuan (dipilih lewat peta + search di wizard touring).
+  destination    String?
+  destinationLat Float?
+  destinationLon Float?
+  // Participant quota (file-10 "joined/quota peserta"); null = no limit.
+  quota        Int?
+  // Growth-history demo value: participants this destination had last
+  // month (powers the "↑ N%" on Rute Populer). null = history unknown.
+  prevJoined   Int?
+  // Trip cover photo (static asset path under /trips/). null = no photo.
+  image        String?
+  // Time/status note ("Hari ke 2 / 5", "Berangkat 08:00"). null = none.
+  note         String?
+  // SET-7/8: durasi hari (>=3 = high-risk); null = tidak diisi.
+  durationDays Int?
+  isOpenTrip   Boolean    @default(false)
+  status       TripStatus @default(PLANNED)
+  leaderId     String
+  createdAt    DateTime   @default(now())
+
+  // PAY: harga per peserta untuk trip berbayar (rupiah); null = gratis.
+  price        Int?
+
+  // Hiking: tautan rute dari wizard (PR api-rute-trip-hiking, 3 Nov
+  // 2026). null = trip tanpa rute (touring + trip hiking lama yang
+  // dibuat sebelum flow ini). GET mengembalikan field turunan
+  // mountainName / routeName / distanceKm / gainM / estHours dari
+  // relasi ini (lihat attachTripRouteInfo di db.ts). Hapus gunung /
+  // jalur dari katalog tidak menghapus trip — tautan jadi null.
+  mountainId String?
+  routeId    String?
+
+  mountain Mountain?      @relation(fields: [mountainId], references: [id], onDelete: SetNull)
+  route    MountainRoute? @relation(fields: [routeId], references: [id], onDelete: SetNull)
+
+  members     TripMember[]
+  locations   Location[]
+  sosAlerts   SosAlert[]
+  checkpoints Checkpoint[]
+  shareLinks  ShareLink[]
+  invites     TripInvite[]
+  organizerVerifications OrganizerVerification[]
+  payments    TripPayment[]
+  questions   TripQuestion[]
+  // AI-R: satu laporan pasca-trip aktif per trip (regenerate menimpa
+  // baris ini, versi naik — bukan riwayat; lihat routes/trips.ts).
+  reports     TripReport[]
+}
+
+// AI-Q (2 Nov 2026): riwayat tanya-jawab member per trip. answer null +
+// notFound true = jawaban tidak ada di data trip (guardrail anti-karangan,
+// bukan teks jawaban); sources = kunci fakta trip yang dipakai AI;
+// model null saat notFound (tidak ada jawaban AI untuk diatribusi).
+model TripQuestion {
+  id        String   @id @default(uuid())
+  tripId    String
+  userId    String
+  question  String
+  answer    String?
+  notFound  Boolean  @default(false)
+  sources   String[] @default([])
+  model     String?
+  // Link peta deterministik untuk jawaban lokasi (dibuat server dari
+  // data trip, bukan dari AI); null = baris lama sebelum fitur link.
+  links     Json?
+  createdAt DateTime @default(now())
+
+  trip Trip @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([tripId, createdAt])
+}
+
+// AI-R — laporan pasca-trip (tersimpan, bisa dibuka lagi). facts =
+// snapshot angka + daftar dari query DB saat generate (anggota,
+// kehadiran, check-in, SOS per alasan); summary = narasi AI yang
+// merangkai facts itu, disimpan verbatim — server tidak pernah
+// mengarang isi laporan (tanpa AI = 503, tanpa fallback teks).
+model TripReport {
+  id            String   @id @default(uuid())
+  tripId        String   @unique
+  generatedById String
+  summary       String
+  model         String
+  facts         Json
+  version       Int      @default(1)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  trip Trip @relation(fields: [tripId], references: [id], onDelete: Cascade)
+
+  @@index([tripId])
+}
+
+model OrganizerVerification {
+  id                       String                      @id @default(uuid())
+  userId                   String
+  tripId                   String?
+  organizerType            TripType?
+  region                   String?
+  avatarUrl                String?
+  // Pengajuan organizer (diisi pendaftar dari app, diverifikasi MANUAL
+  // oleh admin): nama organizer + alamat + file KTP privat.
+  // identityDocumentFilename = nama file di folder privat (BUKAN url
+  // publik, bukan /uploads) — tidak pernah dikirim ke klien.
+  organizerName            String?
+  address                  String?
+  identityDocumentFilename String?
+  identityDocumentComplete Boolean                     @default(false)
+  profileComplete          Boolean                     @default(false)
+  status                   OrganizerVerificationStatus @default(PENDING)
+  rejectionNote            String?
+  submittedAt              DateTime                    @default(now())
+  reviewedAt               DateTime?
+  reviewedById             String?
+
+  user       User  @relation("OrganizerVerificationApplicant", fields: [userId], references: [id], onDelete: Cascade)
+  trip       Trip? @relation(fields: [tripId], references: [id], onDelete: SetNull)
+  reviewedBy User? @relation("OrganizerVerificationReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
+
+  @@index([status, submittedAt])
+  @@index([userId])
+}
+
+model TripMember {
+  tripId     String
+  userId     String
+  role       TripRole   @default(MEMBER)
+  attendance Attendance @default(NOT_DEPARTED)
+
+  trip Trip @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([tripId, userId])
+}
+
+model Location {
+  id           String   @id @default(uuid())
+  tripId       String
+  userId       String
+  lat          Float
+  lon          Float
+  accuracy     Float?
+  speed        Float?
+  heading      Float?
+  altitude     Float?
+  batteryLevel Float?
+  ts           DateTime
+
+  trip Trip @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([tripId, userId])
+}
+
+model SosAlert {
+  id        String    @id @default(uuid())
+  tripId    String
+  senderId  String
+  reason    SosReason
+  level     SosLevel
+  lat       Float
+  lon       Float
+  status    SosStatus @default(ACTIVE)
+  createdAt DateTime  @default(now())
+
+  trip   Trip @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  sender User @relation("SosSender", fields: [senderId], references: [id], onDelete: Cascade)
+
+  @@index([tripId])
+}
+
+// SOS Umum: tanpa trip — pengirim + lokasi + alasan saja. Penerima
+// (Pengguna Sekitar) tidak disimpan di sini; bukti kirimnya adalah
+// baris Notification GENERAL_SOS_ALERT per penerima + responder di
+// bawah (yang menekan "Saya menuju lokasi").
+model GeneralSos {
+  id        String           @id @default(uuid())
+  senderId  String
+  reason    GeneralSosReason
+  level     SosLevel
+  lat       Float
+  lon       Float
+  status    SosStatus        @default(ACTIVE)
+  createdAt DateTime         @default(now())
+  // Pengaman anti-penyalahgunaan (Wella 2 Nov 2026): admin menandai
+  // SOS yang dilaporkan palsu sudah ditinjau/ditindak.
+  flagged   Boolean          @default(false)
+
+  sender     User                  @relation("GeneralSosSender", fields: [senderId], references: [id], onDelete: Cascade)
+  responders GeneralSosResponder[]
+  reports    GeneralSosReport[]
+
+  @@index([senderId, status])
+}
+
+model GeneralSosReport {
+  id           String   @id @default(uuid())
+  generalSosId String
+  reporterId   String
+  createdAt    DateTime @default(now())
+
+  generalSos GeneralSos @relation(fields: [generalSosId], references: [id], onDelete: Cascade)
+  reporter   User       @relation("GeneralSosReporter", fields: [reporterId], references: [id], onDelete: Cascade)
+
+  @@unique([generalSosId, reporterId])
+  @@index([generalSosId])
+}
+
+model GeneralSosResponder {
+  id           String     @id @default(uuid())
+  generalSosId String
+  userId       String
+  createdAt    DateTime   @default(now())
+
+  generalSos GeneralSos @relation(fields: [generalSosId], references: [id], onDelete: Cascade)
+  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([generalSosId, userId])
+  @@index([generalSosId])
+}
+
+// AI-P — Foto SOS (2 Nov 2026): satu SOS (trip maupun umum) bisa
+// dilampiri beberapa foto. Sengaja TANPA foreign key: targetnya
+// polimorfik (SosAlert vs GeneralSos) sehingga relasi Prisma tidak
+// bisa mengikat keduanya; penghapusan SOS tidak otomatis menghapus
+// baris ini (file + baris dibersihkan terpisah bila dibutuhkan).
+// aiStatus: PENDING = belum pernah dianalisis; AVAILABLE = deskripsi
+// vision tersimpan; UNAVAILABLE = vision belum dikonfigurasi atau
+// upstream gagal — klien menampilkan "belum tersedia", TIDAK PERNAH
+// deskripsi karangan. aiModel = nama model Meta yang dipakai (pola
+// atribusi ai.ts: klien menampilkan "Built with Muse Spark Open"
+// bila model terisi).
+enum SosPhotoKind {
+  TRIP
+  GENERAL
+}
+
+enum SosPhotoAiStatus {
+  PENDING
+  AVAILABLE
+  UNAVAILABLE
+}
+
+model SosPhoto {
+  id            String           @id @default(uuid())
+  kind          SosPhotoKind
+  sosId         String
+  senderId      String
+  photoUrl      String
+  photoFilename String
+  aiDescription String?
+  aiModel       String?
+  aiStatus      SosPhotoAiStatus @default(PENDING)
+  createdAt     DateTime         @default(now())
+
+  @@index([kind, sosId])
+  @@index([senderId])
+}
+
+model Checkpoint {
+  id     String @id @default(uuid())
+  tripId String
+  name   String
+  lat    Float
+  lon    Float
+  // A-5 §2: feed aktivitas trip butuh waktu pembuatan pos.
+  createdAt DateTime @default(now())
+
+  trip     Trip                  @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  checkIns CheckpointCheckIn[]
+}
+
+model CheckpointCheckIn {
+  id           String   @id @default(uuid())
+  checkpointId String
+  userId       String
+  ts           DateTime @default(now())
+
+  checkpoint Checkpoint @relation(fields: [checkpointId], references: [id], onDelete: Cascade)
+  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model ShareLink {
+  id        String      @id @default(uuid())
+  tripId    String
+  label     String
+  scope     ShareScope
+  token     String      @unique
+  createdBy String
+  revokedAt DateTime?
+
+  trip    Trip @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  creator User @relation(fields: [createdBy], references: [id], onDelete: Cascade)
+}
+
+// INVITE (2 Nov 2026): link undangan trip — HANYA dibuat leader,
+// berlaku sampai trip dimulai. Beda dari ShareLink (pantau read-only).
+model TripInvite {
+  id        String    @id @default(uuid())
+  tripId    String
+  label     String
+  token     String    @unique
+  createdBy String
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  trip    Trip @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  creator User @relation(fields: [createdBy], references: [id], onDelete: Cascade)
+
+  @@index([tripId])
+}
+
+// Community (Komunitas page, tab Komunitas Aktif + mobile Explore/Clubs).
+// Dashboard: list + delete. A-5 §12: sisi user — detail, join/leave,
+// feed + diskusi. description/region nullable: baris lama tetap sah.
+model Community {
+  id          String   @id @default(uuid())
+  name        String
+  description String?
+  region      String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  members CommunityMember[]
+  posts   CommunityPost[]
+}
+
+// A-5 §12: feed postingan klub + komentar diskusi.
+model CommunityPost {
+  id          String   @id @default(uuid())
+  communityId String
+  authorId    String
+  body        String
+  createdAt   DateTime @default(now())
+
+  community Community          @relation(fields: [communityId], references: [id], onDelete: Cascade)
+  comments  CommunityComment[]
+
+  @@index([communityId, createdAt])
+}
+
+model CommunityComment {
+  id        String   @id @default(uuid())
+  postId    String
+  authorId  String
+  body      String
+  createdAt DateTime @default(now())
+
+  post CommunityPost @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@index([postId, createdAt])
+}
+
+// A-5 §10: katalog gunung + jalur (ERD Mountain/MountainRoute).
+// Sumber kebenaran pindah dari katalog klien mobile (utils/mountains.ts).
+model Mountain {
+  id            String  @id
+  name          String
+  elevationM    Int
+  location      String
+  difficultyKey String
+  // Tabel Gunung (1 Nov 2026): kolom sesuai struktur nama_gunung.json —
+  // provinsi terpisah dari lokasi, tipe vulkanik, status app, gambar
+  // buatan sendiri, deskripsi + koordinat untuk detail.
+  province      String  @default("")
+  imageUrl      String?
+  volcanoActive Boolean @default(false)
+  isActive      Boolean @default(true)
+  description   String?
+  lat           Float?
+  lon           Float?
+  // Asal katalog: 'MDPL' = seed katalog MDPL shifted (dikelola
+  // replaceMountainCatalog), 'USER' = gunung buatan user yang sudah
+  // disetujui admin — TIDAK BOLEH dihapus seed (lihat db.ts).
+  source        String  @default("MDPL")
+
+  routes         MountainRoute[]
+  routeProposals RouteProposal[]
+  trips          Trip[]
+}
+
+model MountainRoute {
+  id           String  @id
+  mountainId   String
+  name         String
+  meetingPoint String
+  distanceKm   Float?
+  gainM        Int?
+  estHours     Float?
+  recommended  Boolean @default(false)
+  isActive     Boolean @default(true)
+  // Asal katalog, sama seperti Mountain.source: 'MDPL' vs 'USER'.
+  source       String  @default("MDPL")
+  // Geometri track versi shifted (MultiLineString, JSON) — hanya untuk
+  // jalur MDPL; jalur admin manual boleh null.
+  track        Json?
+
+  mountain Mountain @relation(fields: [mountainId], references: [id], onDelete: Cascade)
+  posts    RoutePost[]
+  trips    Trip[]
+
+  @@index([mountainId])
+}
+
+// Jalur (1 Nov 2026): daftar pos berurutan dari basecamp sampai
+// puncak. meetingPoint = basecamp (titik kumpul); posts = pos-pos
+// perantara + Puncak di akhir — dibuat otomatis oleh API kalau
+// admin tidak menulis pos puncak sendiri, jadi satu form Tambah
+// Jalur selalu menghasilkan jalur lengkap sampai atas.
+model RoutePost {
+  id      String @id @default(uuid())
+  routeId String
+  order   Int
+  name    String
+  // Kolom checkpoint MDPL (nullable: pos admin manual tidak punya ini).
+  lat            Float?
+  lon            Float?
+  elevationM     Int?
+  autoCheckpoint Boolean @default(false)
+  isTarget       Boolean @default(false)
+  // Tags MDPL per checkpoint (Post/CampArea/Peak/dll.): array kosong =
+  // pos admin manual, yang tampil sebagai Pos di peta/tabel.
+  tags           String[] @default([])
+  // Titik kumpul awal di kaki gunung (usulan jalur user: checkpoint
+  // pertama WAJIB bertanda ini; jalur MDPL/admin lama = false).
+  isGathering     Boolean @default(false)
+
+  route MountainRoute @relation(fields: [routeId], references: [id], onDelete: Cascade)
+
+  @@index([routeId, order])
+}
+
+// Usulan gunung & jalur buatan user (1 Nov 2026, keputusan Wella):
+// masuk ANTRE PERSETUJUAN ADMIN, tidak langsung tampil di katalog
+// publik. Approve = membuat baris Mountain/MountainRoute sungguhan
+// bersource 'USER' (selamat dari seed MDPL); reject = status saja.
+// Trip tidak bisa dibuat dari usulan pending karena usulan bukan
+// baris Mountain — wizard hanya membaca katalog live.
+model MountainProposal {
+  id           String   @id @default(uuid())
+  userId       String
+  name         String
+  location     String
+  lat          Float
+  lon          Float
+  elevationM   Int?
+  status       String   @default("PENDING")
+  rejectReason String?
+  createdAt    DateTime @default(now())
+  decidedAt    DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
+}
+
+model RouteProposal {
+  id           String   @id @default(uuid())
+  userId       String
+  mountainId   String
+  name         String
+  status       String   @default("PENDING")
+  rejectReason String?
+  createdAt    DateTime @default(now())
+  decidedAt    DateTime?
+
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  mountain Mountain @relation(fields: [mountainId], references: [id], onDelete: Cascade)
+  posts    RouteProposalPost[]
+
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
+}
+
+model RouteProposalPost {
+  id          String  @id @default(uuid())
+  proposalId  String
+  order       Int
+  name        String
+  lat         Float
+  lon         Float
+  isGathering Boolean @default(false)
+
+  proposal RouteProposal @relation(fields: [proposalId], references: [id], onDelete: Cascade)
+
+  @@index([proposalId, order])
+}
+
+model CommunityMember {
+  id          String   @id @default(uuid())
+  communityId String
+  userId      String
+  joinedAt    DateTime @default(now())
+
+  community Community @relation(fields: [communityId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([communityId, userId])
+  @@index([communityId])
+}
+
+// AI-G Glimmer (offline queue ingest, 2 Nov 2026): satu baris per pesan
+// asisten yang dikirim dari antrean lokal mobile. clientMessageId adalah
+// kunci idempotensi PER PENGGUNA (@@unique userId + clientMessageId):
+// kirim ulang yang sama tidak pernah membuat baris kedua dan tidak
+// memanggil AI kedua kali. answer null = pesan tersimpan tapi AI belum
+// menjawab (mis. upstream gagal saat ingest) — klien mengulang kunci
+// yang sama sampai 2xx. priority "sos"/"normal" hanya memengaruhi
+// urutan flush di klien (SOS dulu); server tidak pernah mengusir
+// baris ini (tidak ada TTL/expiry).
+model AiGlimmerMessage {
+  id              String   @id @default(uuid())
+  userId          String
+  clientMessageId String
+  message         String
+  priority        String   @default("normal")
+  answer          String?
+  model           String?
+  createdAt       DateTime @default(now())
+  answeredAt      DateTime?
+
+  sender User @relation("GlimmerSender", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, clientMessageId])
+  @@index([userId, createdAt])
+}

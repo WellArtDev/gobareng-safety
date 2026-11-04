@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "baseUrl": ".",
+    "ignoreDeprecations": "6.0",
+    "paths": {
+      "#lib": [
+        "./src/lib/index.ts"
+      ],
+      "#lib/*": [
+        "./src/lib/*"
+      ]
+    },
+    "strict": true
+  },
+  "extends": "$app/tsconfig",
+  "include": [
+    "src",
+    "vite.config.ts"
+  ],
+  "exclude": [
+    "src/lib/__tests__"
+  ]
+}
